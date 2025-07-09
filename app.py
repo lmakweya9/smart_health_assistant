@@ -2,11 +2,10 @@ import streamlit as st
 import os
 from dotenv import load_dotenv
 import cohere
-import pyttsx3
 import random
 import json
-import threading
-import time # <-- NEW: Import time module
+import openai # <-- NEW: Import OpenAI library
+import io    # <-- NEW: Import io for handling audio data in memory
 
 # Define the file path for chat history
 HISTORY_FILE = "chat_history.json"
@@ -57,41 +56,50 @@ else:
     st.error("Cohere API key not found. Please set the 'COHERE_API_KEY' variable in your '.env' file.")
     st.stop()
 
-# --- Initialize pyttsx3 engine ONCE ---
-@st.cache_resource
-def get_tts_engine():
+# --- Initialize OpenAI Client for TTS ---
+openai_api_key = os.getenv("OPENAI_API_KEY")
+openai_client = None # Initialize to None
+
+if openai_api_key:
     try:
-        engine = pyttsx3.init()
-        return engine
+        openai_client = openai.OpenAI(api_key=openai_api_key)
+        print("DEBUG: OpenAI client initialized successfully for TTS.")
     except Exception as e:
-        st.warning(f"Could not initialize text-to-speech engine. Text-to-Speech might not work. Error: {e}")
-        print(f"DEBUG: pyttsx3 initialization failed: {e}")
-        return None
+        st.warning(f"Failed to initialize OpenAI client for TTS: {e}. Text-to-Speech might not work.")
+        print(f"DEBUG: OpenAI client initialization for TTS failed: {e}")
+else:
+    st.warning("OPENAI_API_KEY not found. Text-to-Speech will not be available. Please set it in your '.env' file.")
 
-tts_engine = get_tts_engine()
+# --- Function to speak text using OpenAI TTS ---
+def speak_text_cloud(text):
+    if openai_client:
+        try:
+            # Use OpenAI's text-to-speech API
+            # You can change model ('tts-1', 'tts-1-hd') and voice ('alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer')
+            speech_response = openai_client.audio.speech.create(
+                model="tts-1", # or "tts-1-hd" for higher quality (more expensive)
+                voice="nova",  # Choose a voice that suits your preference
+                input=text
+            )
+            # Get audio content as bytes
+            audio_bytes = io.BytesIO(speech_response.content)
 
-# --- Function to speak text (using pyttsx3) ---
-def _run_tts_thread(engine, text):
-    """Helper function to run TTS in a separate thread."""
-    try:
-        engine.say(text)
-        engine.runAndWait()
-        print("DEBUG: Speech playback completed in thread.")
-    except Exception as e:
-        print(f"DEBUG: Error in TTS thread: {e}")
+            # Play audio in Streamlit
+            st.audio(audio_bytes, format='audio/mp3', start_time=0)
+            print("DEBUG: OpenAI TTS audio played successfully.")
 
-def speak_text_offline(text):
-    if tts_engine:
-        # Stop any currently speaking audio before starting new one (optional, but can prevent overlap)
-        tts_engine.stop()
-        # Run the speech in a separate thread to avoid blocking the Streamlit main loop
-        speech_thread = threading.Thread(target=_run_tts_thread, args=(tts_engine, text))
-        speech_thread.start()
-        time.sleep(0.1) # <-- NEW: Small delay
-        print("DEBUG: Speech queued in separate thread and small delay added.")
+        except openai.APIConnectionError as e:
+            st.error(f"OpenAI TTS API connection error: {e}. Check your internet connection.")
+            print(f"DEBUG: OpenAI TTS API connection error: {e}")
+        except openai.APIStatusError as e:
+            st.error(f"OpenAI TTS API status error: {e.status_code} - {e.response}. Check your API key or usage limits.")
+            print(f"DEBUG: OpenAI TTS API status error: {e}")
+        except Exception as e:
+            st.error(f"An unexpected error occurred during OpenAI TTS: {e}")
+            print(f"DEBUG: Unexpected OpenAI TTS error: {e}")
     else:
-        print("DEBUG: TTS engine not available.")
-
+        st.info("OpenAI API key not configured, text-to-speech is unavailable.")
+        print("DEBUG: OpenAI client not available for TTS.")
 
 # --- Define Health Tips ---
 HEALTH_TIPS = [
@@ -141,38 +149,11 @@ st.info(f"✨ **Health Buddy's Quick Tip:** {random.choice(HEALTH_TIPS)}")
 st.markdown("---")
 
 
-# --- Speech Customization Controls in Sidebar ---
-st.sidebar.header("🎙️ Speech Settings")
-if tts_engine:
-    current_rate = tts_engine.getProperty('rate') if tts_engine else 160
-    current_volume = tts_engine.getProperty('volume') if tts_engine else 0.9
-
-    speech_rate = st.sidebar.slider(
-        "Speech Rate (words/min)",
-        min_value=50, max_value=300, value=int(current_rate), step=10,
-        key="speech_rate_slider",
-        help="Adjust the speed of the assistant's voice."
-    )
-    speech_volume = st.sidebar.slider(
-        "Speech Volume",
-        min_value=0.0, max_value=1.0, value=current_volume, step=0.05,
-        key="speech_volume_slider",
-        help="Adjust the loudness of the assistant's voice."
-    )
-
-    tts_engine.setProperty('rate', speech_rate)
-    tts_engine.setProperty('volume', speech_volume)
-    print(f"DEBUG: TTS Engine Rate set to: {tts_engine.getProperty('rate')}") # <-- NEW: Debug print
-    print(f"DEBUG: TTS Engine Volume set to: {tts_engine.getProperty('volume')}") # <-- NEW: Debug print
-else:
-    st.sidebar.info("Speech settings unavailable (TTS engine failed to initialize).")
-
-
 # --- About/Disclaimer Section (Improved) ---
 with st.expander("ℹ️ About this Assistant & Disclaimer"):
     st.markdown("""
     This is a Smart Health Assistant, an AI designed to provide **general health and wellness information**.
-    It is powered by **Cohere's AI models** for intelligent responses and **offline Text-to-Speech (pyttsx3)** for voice output.
+    It is powered by **Cohere's AI models** for intelligent responses and **OpenAI's Text-to-Speech API** for voice output.
 
     **Important Disclaimer:**
     This assistant provides general information for educational purposes only. It is **NOT** a substitute for professional medical advice, diagnosis, or treatment. Always seek the advice of a qualified healthcare provider (doctor, nurse, etc.) for any questions regarding a medical condition. Do not disregard professional medical advice or delay in seeking it because of something you have read or heard from this assistant.
@@ -229,11 +210,11 @@ if prompt := st.chat_input("Ask me about health..."):
                 ai_response = response.text
                 print(f"DEBUG: AI Raw Response from Cohere: {ai_response}")
 
-                # Check if AI response is not empty before displaying and saving
+                # Check if AI response is not empty before displaying and speaking
                 if ai_response:
                     st.markdown(ai_response)
                     st.session_state.last_ai_response = ai_response
-                    speak_text_offline(ai_response) # Call speech function
+                    speak_text_cloud(ai_response) # <-- Uses OpenAI TTS
                     st.session_state.messages.append({"role": "assistant", "content": ai_response})
                     save_chat_history(st.session_state.messages)
                 else:
