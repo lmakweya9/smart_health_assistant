@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.env # Ignore .env file where API keys are stored
+chat_history.json # Ignore the local chat history file, it will be created on deployment
+.streamlit/
+*.log
+.pytest_cache/
+
+# Operating System Files
+.DS_Store # macOS
+Thumbs.db # Windows
